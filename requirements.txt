@@ -1,6 +1,7 @@
 aiogram==3.13.0
 aiohttp==3.10.10
-multidict
-yarl
-frozenlist
-aiosignal
+multidict==6.1.0
+yarl==1.15.0
+frozenlist==1.4.1
+aiosignal==1.3.1
+attrs==23.2.0
