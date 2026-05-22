@@ -3,7 +3,6 @@ import logging
 import sqlite3
 import random
 import string
-import os
 from datetime import datetime, timedelta
 import aiohttp
 
@@ -14,15 +13,11 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiohttp import web
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 # ====================== AYARLAR ======================
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-MISTRAL_KEY = os.getenv("MISTRAL_KEY")
-
-if not TELEGRAM_TOKEN or not MISTRAL_KEY:
-    raise ValueError("TELEGRAM_TOKEN ve MISTRAL_KEY environment variable olarak ayarlanmalıdır!")
+TELEGRAM_TOKEN = "8996224909:AAHRzNIk22ScbIVu_mPlong5x_g7nX72rno"
+MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions"
+MISTRAL_KEY = "snfCmZWKmLHAhFS0KH7T4sIHRhnfs2B4"
 
 CHANNEL_USERNAME = "@elasexchat"
 ADMIN_IDS = [8064250098, 8778451157]
@@ -148,7 +143,7 @@ async def stream_response(message: types.Message):
             full_response = ""
             sent_message = await message.answer("▌")
 
-            async with session.post("https://api.mistral.ai/v1/chat/completions", json=payload, headers=headers) as resp:
+            async with session.post(MISTRAL_URL, json=payload, headers=headers) as resp:
                 async for line in resp.content:
                     if line:
                         line = line.decode('utf-8').strip()
@@ -159,7 +154,7 @@ async def stream_response(message: types.Message):
                                 if chunk['choices'][0]['delta'].get('content'):
                                     content = chunk['choices'][0]['delta']['content']
                                     full_response += content
-                                    if len(full_response) % 50 == 0:
+                                    if len(full_response) % 50 == 0:  # Her 50 karakterde bir güncelle
                                         try:
                                             await sent_message.edit_text(full_response + "▌")
                                         except:
@@ -167,6 +162,7 @@ async def stream_response(message: types.Message):
                             except:
                                 pass
 
+            # Son mesajı temizle
             await sent_message.edit_text(full_response or "Üzgünüm, bir yanıt üretemedim.")
 
     except Exception as e:
@@ -185,13 +181,14 @@ async def check_subscription_before_use(callback_or_message, is_callback=False):
         await callback_or_message.answer(text, reply_markup=subscribe_keyboard())
     return False
 
-# ====================== KOMUTLAR ======================
+# ====================== /YT KOMUTU ======================
 @dp.message(Command("yt"))
 async def yt_command(message: types.Message):
     if not is_admin(message.from_user.id):
         return await message.answer("⛔ Bu komut sadece adminlere özeldir!")
     await message.answer("🛠 <b>Admin Paneli</b>", reply_markup=admin_menu())
 
+# ====================== START ======================
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     if not await check_subscription_before_use(message):
@@ -205,6 +202,7 @@ async def start_cmd(message: types.Message):
         try:
             ref_id = int(message.text.split()[1])
             if ref_id != user_id:
+                # Sadece 1 kez referans bonusu verme kontrolü
                 cur.execute("SELECT * FROM referrals WHERE referred_id=?", (user_id,))
                 if not cur.fetchone():
                     cur.execute("INSERT INTO referrals VALUES (?,?)", (ref_id, user_id))
@@ -223,6 +221,42 @@ async def start_cmd(message: types.Message):
         "💡 Her davet = +50 mesaj | Her gün +50 bonus!",
         reply_markup=main_menu()
     )
+
+# ====================== TÜM KULLANICILAR SAYFALAMA ======================
+@dp.callback_query(lambda c: c.data.startswith("all_users_"))
+async def show_all_users(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("⛔ Yetkin yok!", show_alert=True)
+
+    page = int(callback.data.split("_")[2])
+    per_page = 20
+    offset = page * per_page
+
+    cur.execute("SELECT COUNT(*) FROM users")
+    total = cur.fetchone()[0]
+
+    cur.execute("""
+        SELECT user_id, username, messages_left, is_vip, total_refs 
+        FROM users ORDER BY user_id DESC LIMIT ? OFFSET ?
+    """, (per_page, offset))
+    users = cur.fetchall()
+
+    text = f"👥 <b>Tüm Kullanıcılar</b> — Sayfa {page+1}\nToplam: {total}\n\n"
+    for u in users:
+        vip = "🌟" if u[3] else ""
+        text += f"• <code>{u[0]}</code> @{u[1] or 'yok'} | {u[2]} msg | Ref:{u[4]} {vip}\n"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[])
+    row = []
+    if page > 0:
+        row.append(InlineKeyboardButton(text="⬅️ Önceki", callback_data=f"all_users_{page-1}"))
+    if offset + per_page < total:
+        row.append(InlineKeyboardButton(text="Sonraki ➡️", callback_data=f"all_users_{page+1}"))
+    if row:
+        kb.inline_keyboard.append(row)
+    kb.inline_keyboard.append([InlineKeyboardButton(text="🔙 Admin Menü", callback_data="admin_menu")])
+
+    await callback.message.edit_text(text, reply_markup=kb)
 
 # ====================== CALLBACK HANDLER ======================
 @dp.callback_query()
@@ -448,32 +482,10 @@ async def handle_text(message: types.Message, state: FSMContext):
     # Normal Sexting
     await stream_response(message)
 
-# ====================== WEBHOOK + POLLING ======================
+# ====================== BAŞLAT ======================
 async def main():
     print("🚀 ElaBot Tam Versiyon Çalışıyor...")
-
-    # Webhook modu (Render, Railway vb.)
-    if os.getenv("WEBHOOK_MODE") == "True":
-        app = web.Application()
-        webhook_path = f"/webhook/{TELEGRAM_TOKEN.split(':')[1]}"
-        
-        SimpleRequestHandler(
-            dispatcher=dp,
-            bot=bot,
-        ).register(app, path=webhook_path)
-
-        await bot.set_webhook(f"{os.getenv('BASE_URL')}{webhook_path}")
-        setup_application(app, dp, bot=bot)
-        
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", 8080)))
-        await site.start()
-        print(f"Webhook modu aktif: {os.getenv('BASE_URL')}{webhook_path}")
-        await asyncio.Event().wait()  # Keep alive
-    else:
-        # Yerel geliştirme için polling
-        await dp.start_polling(bot, skip_updates=True)
+    await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
